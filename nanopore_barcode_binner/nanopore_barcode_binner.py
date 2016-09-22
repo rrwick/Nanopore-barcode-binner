@@ -8,9 +8,9 @@ email: rrwick@gmail.com
 
 import argparse
 import os
-import sys
+import collections
 from .cpp_function_wrappers import barcode_alignment
-from .misc import load_fasta_or_fastq
+from .misc import load_fasta_or_fastq, strip_read_extensions
 from .barcode import BARCODES
 from .barcode_alignment_results import SingleBarcodeAlignmentResult, OverallBarcodeAlignmentResult
 from .output_settings import OutputSettings
@@ -33,7 +33,9 @@ def get_arguments():
     parser.add_argument('-b', '--barcodes', default='NB01,NB02',
                         help='Names of barcodes, separated by commas')
     parser.add_argument('-o', '--out_dir', default='.',
-                        help='Names of barcodes, separated by commas')
+                        help='Output directory for binned reads')
+    parser.add_argument('--best', action='store_true',
+                        help='Only output the best type for a read')
     parser.add_argument('-d', '--end_size', type=int, default=100,
                         help='Number of bases on the ends of reads within barcodes will be '
                              'searched for')
@@ -43,6 +45,7 @@ def get_arguments():
     parser.add_argument('--gap', type=float, default=15.0,
                         help="A read's best score must be better than its second best score by "
                              "this much to be classified")
+    parser.add_argument('--version', action='version', version=__version__)
     return parser.parse_args()
 
 
@@ -56,20 +59,22 @@ def main():
     output_settings = OutputSettings()
 
     # Load the reads and group them up by their type (2D/template/complement).
-    reads = load_fasta_or_fastq(args.reads)
+    reads, read_type = load_fasta_or_fastq(args.reads)
     grouped_reads = {}
     read_names = []
-    for read_name, read_seq in reads:
+    for read in reads:
+        read_name = read[0]
         short_name = read_name.split('_Basecall_2D')[0]
         if short_name not in grouped_reads:
             read_names.append(short_name)
             grouped_reads[short_name] = NanoporeRead(short_name)
-        grouped_reads[short_name].add_read_seq(read_name, read_seq)
+        grouped_reads[short_name].add_read(read)
     reads = [grouped_reads[x] for x in read_names]
 
     header_string = get_header(args, output_settings)
     print(header_string)
 
+    reads_by_barcode = collections.defaultdict(list)
     for read in reads:
         output_line = [read.name]
 
@@ -86,6 +91,30 @@ def main():
         output_line += read.determine_best_barcode_match(barcodes, args.min_score, args.gap,
                                                          output_settings)
         print('\t'.join([str(x) for x in output_line]), flush=True)
+        reads_by_barcode[read.final_call].append(read)
+
+    out_dir = os.path.abspath(args.out_dir)
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+
+    barcode_names = [b.name for b in barcodes] + ['None']
+    for barcode_name in barcode_names:
+        if not reads_by_barcode[barcode_name]:
+            continue
+        binned_reads_filename = strip_read_extensions(os.path.basename(args.reads)) + '_' + \
+            barcode_name
+        if read_type == 'FASTA':
+            binned_reads_filename += '.fasta'
+        else:  # read_type == 'FASTQ'
+            binned_reads_filename += '.fastq'
+        binned_reads_path = os.path.join(out_dir, binned_reads_filename)
+        with open(binned_reads_path, 'wt') as out_reads:
+            if read_type == 'FASTA':
+                for read in reads_by_barcode[barcode_name]:
+                    out_reads.write(read.get_fasta_lines(args.best))
+            else:  # read_type == 'FASTQ'
+                for read in reads_by_barcode[barcode_name]:
+                    out_reads.write(read.get_fastq_lines(args.best))
 
 
 def get_header(args, output_settings):
@@ -151,42 +180,51 @@ class NanoporeRead(object):
 
     def __init__(self, name):
         self.name = name
-        self.sequence_2d = ''
-        self.sequence_template = ''
-        self.sequence_complement = ''
+        self.read_2d = None
+        self.read_template = None
+        self.read_complement = None
         self.barcode_alignment_results = {}
+        self.final_call = 'None'
 
-    def add_read_seq(self, full_name, sequence):
+    def add_read(self, read):
+        full_name = read[0]
         if full_name.endswith('_Basecall_2D_2d'):
-            self.sequence_2d = sequence
+            self.read_2d = read
         elif full_name.endswith('_Basecall_2D_template'):
-            self.sequence_template = sequence
+            self.read_template = read
         elif full_name.endswith('_Basecall_2D_complement'):
-            self.sequence_complement = sequence
+            self.read_complement = read
         else:  # Assume 1D
-            self.sequence_template = sequence
+            self.read_template = read
 
     def has_2d_sequence(self):
-        return self.sequence_2d != ""
+        return self.read_2d is not None
 
     def has_template_sequence(self):
-        return self.sequence_template != ""
+        return self.read_template is not None
 
     def has_complement_sequence(self):
-        return self.sequence_complement != ""
+        return self.read_complement is not None
 
     def get_read_lengths(self):
-        lengths = [len(self.sequence_2d), len(self.sequence_template),
-                   len(self.sequence_complement)]
-        return [x if x > 0 else '' for x in lengths] + [max(lengths)]
+        max_length = 0
+        lengths = []
+        for read in [self.read_2d, self.read_template, self.read_complement]:
+            if read is not None:
+                length = len(read[1])
+                lengths.append(length)
+                max_length = max(max_length, length)
+            else:
+                lengths.append('')
+        return lengths + [max_length]
 
     def get_sequence(self, read_type):
         if read_type == '2d':
-            return self.sequence_2d
+            return self.read_2d[1]
         elif read_type == 'template':
-            return self.sequence_template
+            return self.read_template[1]
         else:  # read_type == 'complement'
-            return self.sequence_complement
+            return self.read_complement[1]
 
     def has_type(self, read_type):
         if read_type == '2d' and self.has_2d_sequence():
@@ -227,9 +265,7 @@ class NanoporeRead(object):
         self.barcode_alignment_results[barcode.name] = OverallBarcodeAlignmentResult(all_results)
 
     def get_output_line(self, barcode, output_settings):
-        output_line = self.barcode_alignment_results[barcode.name].get_output_line(output_settings)
-
-        return output_line
+        return self.barcode_alignment_results[barcode.name].get_output_line(output_settings)
 
     def determine_best_barcode_match(self, barcodes, min_score, min_gap, output_settings):
         output_line = []
@@ -245,7 +281,7 @@ class NanoporeRead(object):
 
         # If the best score is too low, we don't make a barcode call.
         if best_score < min_score:
-            final_call = 'None'
+            self.final_call = 'None'
             confidence = 0.0
 
         else:  # Best score is decent
@@ -253,7 +289,7 @@ class NanoporeRead(object):
 
             # If there's only one possible barcode (an odd situation), then it gets the call.
             if len(scores) == 1:
-                final_call = best_name
+                self.final_call = best_name
 
             # If there are multiple possible barcodes, then the best must be sufficiently better
             # than the second best to be called.
@@ -261,14 +297,105 @@ class NanoporeRead(object):
                 second_best_score = scores[1][1]
                 gap = best_score - second_best_score
                 if gap >= min_gap:
-                    final_call = best_name
+                    self.final_call = best_name
                     confidence *= min(1.0, gap / 100.0)
                 else:
-                    final_call = 'None'
+                    self.final_call = 'None'
                     confidence = 0.0
 
         if output_settings.include_call_confidence:
             output_line.append(confidence)
-        output_line.append(final_call)
+        output_line.append(self.final_call)
 
         return output_line
+
+    def get_fasta_lines(self, only_best):
+        if only_best:
+            return self.get_fasta_lines_one_type(self.get_best_read())
+        else:
+            fasta_lines = ''
+            if self.has_2d_sequence():
+                fasta_lines += self.get_fasta_lines_one_type(self.read_2d)
+            if self.has_complement_sequence():
+                fasta_lines += self.get_fasta_lines_one_type(self.read_complement)
+            if self.has_template_sequence():
+                fasta_lines += self.get_fasta_lines_one_type(self.read_template)
+            return fasta_lines
+
+    @staticmethod
+    def get_fasta_lines_one_type(read):
+        fasta_lines = '>'
+        fasta_lines += read[2]
+        fasta_lines += '\n'
+        fasta_lines += read[1]
+        fasta_lines += '\n'
+        return fasta_lines
+
+    def get_fastq_lines(self, only_best):
+        if only_best:
+            return self.get_fastq_lines_one_type(self.get_best_read())
+        else:
+            fastq_lines = ''
+            if self.has_2d_sequence():
+                fastq_lines += self.get_fastq_lines_one_type(self.read_2d)
+            if self.has_complement_sequence():
+                fastq_lines += self.get_fastq_lines_one_type(self.read_complement)
+            if self.has_template_sequence():
+                fastq_lines += self.get_fastq_lines_one_type(self.read_template)
+            return fastq_lines
+
+    @staticmethod
+    def get_fastq_lines_one_type(read):
+        fastq_lines = '@'
+        fastq_lines += read[4]
+        fastq_lines += '\n'
+        fastq_lines += read[1]
+        fastq_lines += '\n'
+        fastq_lines += read[2]
+        fastq_lines += '\n'
+        fastq_lines += read[3]
+        fastq_lines += '\n'
+        return fastq_lines
+
+    def get_best_type(self):
+        if self.has_2d_sequence():
+            return '2d'
+        elif not self.has_complement_sequence():
+            return 'template'
+        elif not self.has_template_sequence():
+            return 'complement'
+
+        # If there is both template and complement, but not 2d, then we choose the best using the
+        # average Phred score.
+        else:
+            template_err_rate = self.est_error_rate(self.read_template)
+            complement_err_rate = self.est_error_rate(self.read_complement)
+            if template_err_rate <= complement_err_rate:
+                return 'template'
+            else:
+                return 'complement'
+
+    def get_best_read(self):
+        best_type = self.get_best_type()
+        if best_type == '2d':
+            return self.read_2d
+        elif best_type == 'template':
+            return self.read_template
+        else:  # best_type == 'complement'
+            return self.read_complement
+
+    @staticmethod
+    def est_error_rate(read):
+        """
+        Returns an error rate estimate using the Phred quality scores.
+        """
+        # If there are no quality scores, we cannot estimate the error rate.
+        if len(read) < 4:
+            return 1.0
+        qualities = read[3]
+
+        error_count = 0.0
+        for score in qualities:
+            phred = ord(score) - 33
+            error_count += 10.0 ** (-phred / 10.0)
+        return error_count / len(qualities)

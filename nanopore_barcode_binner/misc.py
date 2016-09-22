@@ -455,9 +455,9 @@ def load_fasta_or_fastq(filename):
     """
     file_type = get_sequence_file_type(filename)
     if file_type == 'FASTA':
-        return load_fasta(filename)
+        return load_fasta(filename), 'FASTA'
     else:  # FASTQ
-        return load_fastq(filename)
+        return load_fastq(filename), 'FASTQ'
 
 
 def load_fasta(filename):
@@ -474,13 +474,13 @@ def load_fasta(filename):
             continue
         if line[0] == '>':  # Header line = start of new contig
             if name:
-                fasta_seqs.append((name.split()[0], sequence))
+                fasta_seqs.append((name.split()[0], sequence, name))
                 sequence = ''
             name = line[1:]
         else:
             sequence += line
     if name:
-        fasta_seqs.append((name.split()[0], sequence))
+        fasta_seqs.append((name.split()[0], sequence, name))
     fasta_file.close()
     return fasta_seqs
 
@@ -496,11 +496,12 @@ def load_fastq(fastq_filename):
     reads = []
     with open_func(fastq_filename, 'rt') as fastq:
         for line in fastq:
-            name = line.strip()[1:].split()[0]
+            full_name = line.strip()[1:]
+            short_name = full_name.split()[0]
             sequence = next(fastq).strip()
-            _ = next(fastq)
-            _ = next(fastq)
-            reads.append((name, sequence))
+            spacer = next(fastq).strip()
+            qualities = next(fastq).strip()
+            reads.append((short_name, sequence, spacer, qualities, full_name))
     return reads
 
 

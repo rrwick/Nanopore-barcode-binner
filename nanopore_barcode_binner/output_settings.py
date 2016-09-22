@@ -9,10 +9,10 @@ email: rrwick@gmail.com
 class OutputSettings(object):
 
     def __init__(self,
-                 include_read_lengths=True, include_raw_score=True,
-                 include_adjusted_score=True, include_start_and_end=True,
-                 include_seq=True, include_before_and_after_seq=False,
-                 include_best_scores=True, include_call_confidence=True):
+                 include_read_lengths=False, include_raw_score=False,
+                 include_adjusted_score=False, include_start_and_end=False,
+                 include_seq=False, include_before_and_after_seq=False,
+                 include_best_scores=False, include_call_confidence=False):
         self.include_read_lengths = include_read_lengths
         self.include_raw_score = include_raw_score
         self.include_adjusted_score = include_adjusted_score
