@@ -36,6 +36,8 @@ def get_arguments():
                         help='Output directory for binned reads')
     parser.add_argument('--best', action='store_true',
                         help='Only output the best type for a read')
+    parser.add_argument('--no_trim', action='store_true',
+                        help='Leave the barcodes on the reads')
     parser.add_argument('-d', '--end_size', type=int, default=100,
                         help='Number of bases on the ends of reads within barcodes will be '
                              'searched for')
@@ -108,12 +110,14 @@ def main():
         else:  # read_type == 'FASTQ'
             binned_reads_filename += '.fastq'
         binned_reads_path = os.path.join(out_dir, binned_reads_filename)
+
         with open(binned_reads_path, 'wt') as out_reads:
-            if read_type == 'FASTA':
-                for read in reads_by_barcode[barcode_name]:
+            for read in reads_by_barcode[barcode_name]:
+                if not args.no_trim:
+                    read.trim_read(barcode_name, args.min_score)
+                if read_type == 'FASTA':
                     out_reads.write(read.get_fasta_lines(args.best))
-            else:  # read_type == 'FASTQ'
-                for read in reads_by_barcode[barcode_name]:
+                else:  # read_type == 'FASTQ'
                     out_reads.write(read.get_fastq_lines(args.best))
 
 
@@ -399,3 +403,59 @@ class NanoporeRead(object):
             phred = ord(score) - 33
             error_count += 10.0 ** (-phred / 10.0)
         return error_count / len(qualities)
+
+    def trim_read(self, barcode_name, min_score):
+        """
+        Removes the parts of the read from the barcode alignments onward.
+        """
+        if self.has_2d_sequence():
+            self.trim_read_one_type('2d', barcode_name, min_score)
+        if self.has_template_sequence():
+            self.trim_read_one_type('template', barcode_name, min_score)
+        if self.has_complement_sequence():
+            self.trim_read_one_type('complement', barcode_name, min_score)
+
+    def trim_read_one_type(self, read_type, barcode_name, min_score):
+        """
+        Removes the parts of the read from the barcode alignments onward.
+        """
+        if barcode_name == 'None':
+            return
+        
+        results = self.barcode_alignment_results[barcode_name]
+
+        if read_type == '2d':
+            read = self.read_2d
+            start_results = results.single_results[1]
+            end_results = results.single_results[0]
+        elif read_type == 'template':
+            read = self.read_template
+            start_results = results.single_results[3]
+            end_results = results.single_results[2]
+        else:  # read_type == 'complement'
+            read = self.read_complement
+            start_results = results.single_results[4]
+            end_results = results.single_results[5]
+
+        if start_results.adjusted_score >= min_score:
+            start_trim = start_results.read_end_pos + 1
+        else:
+            start_trim = 0
+
+        if end_results.adjusted_score >= min_score:
+            end_trim = end_results.read_start_pos
+        else:
+            end_trim = len(read[1])
+
+        if len(read) > 3:
+            new_read = (read[0], read[1][start_trim:end_trim], read[2],
+                        read[3][start_trim:end_trim], read[4])
+        else:
+            new_read = (read[0], read[1][start_trim:end_trim], read[2])
+
+        if read_type == '2d':
+            self.read_2d = new_read
+        elif read_type == 'template':
+            self.read_template = new_read
+        else:  # read_type == 'complement'
+            self.read_complement = new_read
