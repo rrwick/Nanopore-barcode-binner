@@ -470,7 +470,7 @@ class NanoporeRead(object):
             output_line.append(self.best_start_match_barcode_name)
             for barcode in barcodes:
                 output_line.append(self.barcode_alignment_results[barcode.name].best_end_score)
-            output_line.append(self.best_start_match_barcode_name)
+            output_line.append(self.best_end_match_barcode_name)
             for barcode in barcodes:
                 output_line.append(self.barcode_alignment_results[barcode.name].mean_best_score)
             output_line.append(self.best_mean_match_barcode_name)
