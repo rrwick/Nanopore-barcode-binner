@@ -1,3 +1,3 @@
 # Nanopore barcode binner
 
-This is a tool for sorting [barcoded](https://store.nanoporetech.com/native-barcoding-kit-i-r9.html) Oxford Nanopore reads into based on alignment with the barcodes.
+__THIS TOOL IS DEPRECATED!__ I've added barcode demultiplexing to [Porechop](https://github.com/rrwick/Porechop), so any further development will happen there, not here. If Porechop doesn't do what you need for barcode binning, post it on [Porechop's issues page](https://github.com/rrwick/Porechop/issues).
